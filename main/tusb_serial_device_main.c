@@ -4,6 +4,20 @@
  * SPDX-License-Identifier: Unlicense OR CC0-1.0
  */
 
+/*
+ * Simple PL2303-like vendor serial example
+ * - Implements TinyUSB vendor class control handler to reply to a few PL2303 vendor requests
+ * - Bridges vendor bulk IN/OUT to UART (UART0)
+ * - Handles SET_LINE and SET_CONTROL_LINE_STATE to configure UART parameters and send a
+ *   status packet back to the host
+ * Notes:
+ * - We avoid modifying managed TinyUSB components. For status notifications that PL2303 uses
+ *   via an Interrupt IN endpoint we currently send the same 9-byte status packet over the
+ *   vendor bulk IN endpoint so hosts still receive it. If strict interrupt behavior is required
+ *   we can add an application-provided configuration descriptor or revisit the managed
+ *   components with your approval.
+ */
+
 #include <stdint.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -13,8 +27,16 @@
 #include "sdkconfig.h"
 #include "driver/uart.h"
 
+/* Private TinyUSB header used only for low-level USB helpers when necessary. Keep usage minimal. */
+#include "device/usbd_pvt.h"
+
 static const char *TAG = "example";
 static uint8_t rx_buf[CFG_TUD_VENDOR_RX_BUFSIZE + 1];
+
+/* Ensure our tag prints INFO-level logs at runtime; this helps debug when ESP_LOG_BUFFER_HEXDUMP
+ * seems not to produce output (it respects the set log level). */
+
+
 
 /**
  * @brief Application Queue
@@ -90,8 +112,13 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
             if (line_control & 0x01) status_byte |= 0x01; // indicate DCD
             status[8] = status_byte;
 
-            tud_vendor_n_int_write(0, status, sizeof(status));
-            tud_vendor_n_int_write_flush(0);
+            /* Send the 9-byte PL2303-like status packet over the vendor bulk IN endpoint.
+             * We use vendor bulk instead of interrupt to avoid changing managed components' descriptors.
+             * This is functionally acceptable for many hosts; if strict interrupt endpoint behavior
+             * is required we can revisit adding an application-provided configuration descriptor.
+             */
+            tud_vendor_n_write(0, status, sizeof(status));
+            tud_vendor_n_write_flush(0);
             return true;
         }
 
@@ -157,6 +184,9 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
 }
 
 // Called when vendor interface receives data (host -> device)
+// We copy the received packet into a small FreeRTOS queue and wake the main loop to
+// forward it to UART. This decouples USB RX (interrupt context) from potentially
+// blocking UART writes.
 void tud_vendor_rx_cb(uint8_t itf, uint8_t const* buffer, uint16_t bufsize)
 {
     app_message_t tx_msg = {
@@ -167,6 +197,8 @@ void tud_vendor_rx_cb(uint8_t itf, uint8_t const* buffer, uint16_t bufsize)
     memcpy(tx_msg.buf, buffer, bufsize > sizeof(tx_msg.buf) ? sizeof(tx_msg.buf) : bufsize);
     xQueueSend(app_queue, &tx_msg, 0);
 
+    /* If using a FIFO RX buffer, clear and rearm the stream transfer so the next
+     * packet can be received. */
     #if CFG_TUD_VENDOR_RX_BUFSIZE > 0
     tud_vendor_read_flush();
     #endif
@@ -175,6 +207,10 @@ void tud_vendor_rx_cb(uint8_t itf, uint8_t const* buffer, uint16_t bufsize)
 static void uart_task(void *arg)
 {
     (void) arg;
+    /* Continuously read UART and forward any received bytes to the host over vendor bulk IN.
+     * We flush after each packet to minimize latency. The vendor write stream will fragment
+     * into USB packets as needed.
+     */
     while (1) {
         int len = uart_read_bytes(UART_NUM_0, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(100));
         if (len > 0) {
@@ -194,6 +230,23 @@ void app_main(void)
     app_message_t msg;
 
     ESP_LOGI(TAG, "USB initialization");
+
+    /* Force INFO level for this tag so ESP_LOG_BUFFER_HEXDUMP prints at INFO in case the
+     * global log level is higher. This helps diagnose cases where hex dump output is missing.
+     */
+    esp_log_level_set(TAG, ESP_LOG_INFO);
+
+    /* Quick hexdump test to confirm ESP_LOG_BUFFER_HEXDUMP is active at INFO level. Look for:
+     * "example: 01 02 03 04"
+     */
+    const uint8_t _hexdump_test[] = { 0x01, 0x02, 0x03, 0x04 };
+    ESP_LOG_BUFFER_HEXDUMP(TAG, _hexdump_test, sizeof(_hexdump_test), ESP_LOG_INFO);
+    /* Use default configuration descriptor from managed components (no changes to managed components).
+     * We intentionally avoid adding an interrupt endpoint in descriptors here to keep the managed
+     * components untouched. Instead, status/notification packets (like the PL2303 status) will be
+     * sent over the vendor bulk IN endpoint so the host still receives the data without requiring
+     * changes to TinyUSB's managed components.
+     */
     const tinyusb_config_t tusb_cfg = {
         .device_descriptor = NULL,
         .string_descriptor = NULL,
