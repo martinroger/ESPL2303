@@ -30,6 +30,7 @@
 
 /* Private TinyUSB header used only for low-level USB helpers when necessary. Keep usage minimal. */
 #include "device/usbd_pvt.h"
+#include <stdbool.h>
 
 static const char *TAG = "example";
 static uint8_t rx_buf[CFG_TUD_VENDOR_RX_BUFSIZE + 1];
@@ -78,6 +79,50 @@ void app_send_to_usb(const uint8_t *data, size_t len)
 static uint8_t set_line_buf[7];
 static uint8_t line_control = 0;
 
+/* Application-controlled status overrides (bit0=DCD, bit1=CTS). These are ORed with
+ * host-supplied control lines when forming the 9-byte PL2303 status packet.
+ */
+static uint8_t status_override = 0;
+
+/* Send the 9-byte PL2303-like status packet using combined host line_control and
+ * application status_override bits. If vendor interface is not mounted, we log a
+ * warning and skip the send.
+ */
+static void pl2303_send_status(void)
+{
+    uint8_t status[9] = {0};
+    uint8_t status_byte = 0;
+    uint8_t combined = line_control | status_override;
+    if (combined & 0x02) status_byte |= 0x80; /* indicate CTS */
+    if (combined & 0x01) status_byte |= 0x01; /* indicate DCD */
+    status[8] = status_byte;
+
+    if (tud_vendor_n_mounted(0)) {
+        tud_vendor_n_write(0, status, sizeof(status));
+        tud_vendor_n_write_flush(0);
+        ESP_LOGI(TAG, "Sent PL2303 status packet: 0x%02x", status[8]);
+    } else {
+        ESP_LOGW(TAG, "PL2303 status not sent: vendor interface not mounted");
+    }
+}
+
+/* Set or clear the Device Carrier Detect (DCD) status bit. This function is
+ * safe to call from application tasks.
+ */
+void pl2303_set_carrier(bool on)
+{
+    if (on) status_override |= 0x01;
+    else status_override &= ~0x01;
+    ESP_LOGI(TAG, "pl2303_set_carrier -> %d", on);
+    pl2303_send_status();
+}
+
+/* Returns effective carrier state (true if DCD is asserted by host or by override) */
+bool pl2303_get_carrier(void)
+{
+    return ((line_control | status_override) & 0x01) != 0;
+}
+
 bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const* request)
 {
     ESP_LOGI(TAG, "Vendor CTRL (stage %d): bm=0x%02x bReq=0x%02x wVal=0x%04x wIdx=0x%04x wLen=%d",
@@ -123,20 +168,10 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
             ESP_LOGI(TAG, "Set control lines: DTR=%d RTS=%d", (bool)(line_control & 0x01), (bool)(line_control & 0x02));
             tud_control_status(rhport, request);
 
-            // send an interrupt-in status packet (9 bytes like PL2303)
-            uint8_t status[9] = {0};
-            uint8_t status_byte = 0;
-            if (line_control & 0x02) status_byte |= 0x80; // indicate CTS
-            if (line_control & 0x01) status_byte |= 0x01; // indicate DCD
-            status[8] = status_byte;
-
-            /* Send the 9-byte PL2303-like status packet over the vendor bulk IN endpoint.
-             * We use vendor bulk instead of interrupt to avoid changing managed components' descriptors.
-             * This is functionally acceptable for many hosts; if strict interrupt endpoint behavior
-             * is required we can revisit adding an application-provided configuration descriptor.
+            /* Send a PL2303-like status packet (9 bytes). Use the helper so that
+             * status is consistent with any carrier overrides set by the application.
              */
-            tud_vendor_n_write(0, status, sizeof(status));
-            tud_vendor_n_write_flush(0);
+            pl2303_send_status();
             return true;
         }
 
