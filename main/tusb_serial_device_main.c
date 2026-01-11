@@ -33,6 +33,9 @@
 static const char *TAG = "example";
 static uint8_t rx_buf[CFG_TUD_VENDOR_RX_BUFSIZE + 1];
 
+/* Bridge UART selection: use UART1 instead of UART0 per request. */
+#define BRIDGE_UART_NUM UART_NUM_1
+
 /* Ensure our tag prints INFO-level logs at runtime; this helps debug when ESP_LOG_BUFFER_HEXDUMP
  * seems not to produce output (it respects the set log level). */
 
@@ -42,11 +45,33 @@ static uint8_t rx_buf[CFG_TUD_VENDOR_RX_BUFSIZE + 1];
  * @brief Application Queue
  */
 static QueueHandle_t app_queue;
+/* Queue for messages coming from USB (host->device) */
 typedef struct {
     uint8_t buf[CFG_TUD_VENDOR_RX_BUFSIZE + 1];     // Data buffer
     size_t buf_len;                                     // Number of bytes received
-    uint8_t itf;                                        // Index of CDC device interface
+    uint8_t itf;                                        // Index of vendor interface
 } app_message_t;
+
+/* Queue for messages originating from the application (to be sent to host over USB) */
+static QueueHandle_t usb_tx_queue;
+typedef struct {
+    uint8_t buf[CFG_TUD_VENDOR_TX_BUFSIZE + 1];
+    size_t len;
+    uint8_t source; /* optional source id */
+} usb_out_message_t;
+
+/* Helper API: allow other tasks to push data to the PL2303 USB interface. */
+void app_send_to_usb(const uint8_t *data, size_t len)
+{
+    usb_out_message_t msg;
+    if (!usb_tx_queue) return;
+
+    if (len > sizeof(msg.buf)) len = sizeof(msg.buf);
+    memcpy(msg.buf, data, len);
+    msg.len = len;
+    msg.source = 0;
+    xQueueSend(usb_tx_queue, &msg, 0);
+}
 
 /**
  * @brief CDC device RX callback
@@ -162,13 +187,13 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
             if (stop == 2) uart_cfg.stop_bits = UART_STOP_BITS_2;
             else uart_cfg.stop_bits = UART_STOP_BITS_1;
 
-            // apply config to UART_NUM_0
-            esp_err_t ret = uart_param_config(UART_NUM_0, &uart_cfg);
+            // apply config to the configured bridge UART (UART1)
+            esp_err_t ret = uart_param_config(BRIDGE_UART_NUM, &uart_cfg);
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to set UART params: %s", esp_err_to_name(ret));
             }
             if (baud) {
-                ret = uart_set_baudrate(UART_NUM_0, baud);
+                ret = uart_set_baudrate(BRIDGE_UART_NUM, baud);
                 if (ret != ESP_OK) {
                     ESP_LOGE(TAG, "Failed to set UART baud: %s", esp_err_to_name(ret));
                 }
@@ -207,18 +232,37 @@ void tud_vendor_rx_cb(uint8_t itf, uint8_t const* buffer, uint16_t bufsize)
 static void uart_task(void *arg)
 {
     (void) arg;
-    /* Continuously read UART and forward any received bytes to the host over vendor bulk IN.
-     * We flush after each packet to minimize latency. The vendor write stream will fragment
-     * into USB packets as needed.
+    /* Continuously read from BRIDGE_UART_NUM (UART1) and forward to host over vendor bulk IN.
+     * Also log the received bytes to the monitor so a copy exists locally.
      */
     while (1) {
-        int len = uart_read_bytes(UART_NUM_0, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(100));
+        int len = uart_read_bytes(BRIDGE_UART_NUM, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(100));
         if (len > 0) {
             ESP_LOGI(TAG, "UART -> USB: %d bytes", len);
+            ESP_LOG_BUFFER_HEXDUMP(TAG, rx_buf, len, ESP_LOG_INFO);
+            /* Also print as ASCII for convenience (non-printables may appear as garbage). */
+            ESP_LOGI(TAG, "UART -> USB (ASCII): %.*s", len, (char*)rx_buf);
+
             tud_vendor_n_write(0, rx_buf, len);
             tud_vendor_n_write_flush(0);
         }
         vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+/* Task that sends queued messages (from any source) out to the host over the vendor interface. */
+static void usb_out_task(void *arg)
+{
+    (void)arg;
+    usb_out_message_t msg;
+    while (1) {
+        if (xQueueReceive(usb_tx_queue, &msg, portMAX_DELAY)) {
+            ESP_LOGI(TAG, "OUTGOING -> USB: %d bytes", msg.len);
+            ESP_LOG_BUFFER_HEXDUMP(TAG, msg.buf, msg.len, ESP_LOG_INFO);
+            ESP_LOGI(TAG, "OUTGOING -> USB (ASCII): %.*s", msg.len, (char*)msg.buf);
+            tud_vendor_n_write(0, msg.buf, msg.len);
+            tud_vendor_n_write_flush(0);
+        }
     }
 }
 
@@ -271,11 +315,16 @@ void app_main(void)
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
     };
 
-    ESP_ERROR_CHECK(uart_param_config(UART_NUM_0, &uart_cfg));
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_0, 512, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(BRIDGE_UART_NUM, &uart_cfg));
+    ESP_ERROR_CHECK(uart_driver_install(BRIDGE_UART_NUM, 512, 0, 0, NULL, 0));
 
     /* start UART rx task */
     xTaskCreate(uart_task, "uart_task", 2048, NULL, 10, NULL);
+
+    /* Create outgoing USB queue and start the USB-out task so other tasks may push messages to
+     * the PL2303 interface without touching the vendor class internals directly. */
+    usb_tx_queue = xQueueCreate(8, sizeof(usb_out_message_t));
+    xTaskCreate(usb_out_task, "usb_out_task", 2048, NULL, 10, NULL);
 
     /* Vendor-class in use: vendor control handler and RX callbacks are implemented via tud_vendor_control_xfer_cb and tud_vendor_rx_cb. */
     /* No additional class init required here. */
@@ -289,8 +338,11 @@ void app_main(void)
                 ESP_LOGI(TAG, "USB -> UART, channel %d:", msg.itf);
                 ESP_LOG_BUFFER_HEXDUMP(TAG, msg.buf, msg.buf_len, ESP_LOG_INFO);
 
-                /* forward to UART */
-                int written = uart_write_bytes(UART_NUM_0, (const char*)msg.buf, msg.buf_len);
+                /* forward to bridge UART (UART1) */
+                ESP_LOG_BUFFER_HEXDUMP(TAG, msg.buf, msg.buf_len, ESP_LOG_INFO);
+                ESP_LOGI(TAG, "USB -> UART (ASCII): %.*s", msg.buf_len, (char*)msg.buf);
+
+                int written = uart_write_bytes(BRIDGE_UART_NUM, (const char*)msg.buf, msg.buf_len);
                 if (written < 0) {
                     ESP_LOGE(TAG, "UART write error: %d", written);
                 }
