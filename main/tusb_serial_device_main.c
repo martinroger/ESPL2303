@@ -1,24 +1,5 @@
-/*
- * SPDX-FileCopyrightText: 2022-2024 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: Unlicense OR CC0-1.0
- */
-
-/*
- * Simple PL2303-like vendor serial example
- * - Implements TinyUSB vendor class control handler to reply to a few PL2303 vendor requests
- * - Bridges vendor bulk IN/OUT to UART (UART0)
- * - Handles SET_LINE and SET_CONTROL_LINE_STATE to configure UART parameters and send a
- *   status packet back to the host
- * Notes:
- * - We avoid modifying managed TinyUSB components. For status notifications that PL2303 uses
- *   via an Interrupt IN endpoint we currently send the same 9-byte status packet over the
- *   vendor bulk IN endpoint so hosts still receive it. If strict interrupt behavior is required
- *   we can add an application-provided configuration descriptor or revisit the managed
- *   components with your approval.
- */
-
 #include <stdint.h>
+#include <stdbool.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -29,9 +10,7 @@
 #include "driver/uart.h"
 
 /* Private TinyUSB header used only for low-level USB helpers when necessary. Keep usage minimal. */
-#include "device/usbd_pvt.h"
-#include <stdbool.h>
-
+// #include "device/usbd_pvt.h"
 static const char *TAG = "example";
 static uint8_t rx_buf[CFG_TUD_VENDOR_RX_BUFSIZE + 1];
 
@@ -450,12 +429,12 @@ void app_main(void)
     ESP_ERROR_CHECK(uart_driver_install(BRIDGE_UART_NUM, 512, 512, 0, NULL, 0));
 
     /* start UART rx task */
-    xTaskCreate(uart_task, "uart_task", 2048, NULL, 10, NULL);
+    xTaskCreate(uart_task, "uart_task", 4096, NULL, 10, NULL);
 
     /* Create outgoing USB queue and start the USB-out task so other tasks may push messages to
      * the PL2303 interface without touching the vendor class internals directly. */
     usb_tx_queue = xQueueCreate(8, sizeof(usb_out_message_t));
-    xTaskCreate(usb_out_task, "usb_out_task", 2048, NULL, 10, NULL);
+    xTaskCreate(usb_out_task, "usb_out_task", 4096, NULL, 10, NULL);
 
     /* Vendor-class in use: vendor control handler and RX callbacks are implemented via tud_vendor_control_xfer_cb and tud_vendor_rx_cb. */
     /* No additional class init required here. */
