@@ -222,11 +222,21 @@ void tud_vendor_rx_cb(uint8_t itf, uint8_t const* buffer, uint16_t bufsize)
     #endif
 }
 
+static volatile bool uart_forward_enabled = true;
+
+void uart_forward_enable(bool enable)
+{
+    uart_forward_enabled = enable;
+    ESP_LOGI(TAG, "UART->USB forwarding %s", enable ? "enabled" : "disabled");
+}
+
 static void uart_task(void *arg)
 {
     (void) arg;
     /* Continuously read from BRIDGE_UART_NUM (UART1) and forward to host over vendor bulk IN.
      * Also log the received bytes to the monitor so a copy exists locally.
+     * Forwarding can be enabled/disabled via uart_forward_enable(). We also check
+     * that the vendor interface is mounted before attempting writes.
      */
     while (1) {
         int len = uart_read_bytes(BRIDGE_UART_NUM, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(100));
@@ -236,8 +246,12 @@ static void uart_task(void *arg)
             /* Also print as ASCII for convenience (non-printables may appear as garbage). */
             ESP_LOGI(TAG, "UART -> USB (ASCII): %.*s", len, (char*)rx_buf);
 
-            tud_vendor_n_write(0, rx_buf, len);
-            tud_vendor_n_write_flush(0);
+            if (uart_forward_enabled && tud_vendor_n_mounted(0)) {
+                tud_vendor_n_write(0, rx_buf, len);
+                tud_vendor_n_write_flush(0);
+            } else {
+                ESP_LOGW(TAG, "UART->USB data dropped (forward %s, mounted %d)", uart_forward_enabled ? "enabled" : "disabled", tud_vendor_n_mounted(0));
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -397,6 +411,7 @@ void app_main(void)
     };
 
     ESP_ERROR_CHECK(uart_param_config(BRIDGE_UART_NUM, &uart_cfg));
+    uart_set_pin(BRIDGE_UART_NUM,17,18,-1,-1);
     ESP_ERROR_CHECK(uart_driver_install(BRIDGE_UART_NUM, 512, 512, 0, NULL, 0));
 
     /* start UART rx task */
@@ -417,9 +432,6 @@ void app_main(void)
 
                 /* Print received data*/
                 ESP_LOGI(TAG, "USB -> UART, channel %d:", msg.itf);
-                ESP_LOG_BUFFER_HEXDUMP(TAG, msg.buf, msg.buf_len, ESP_LOG_INFO);
-
-                /* forward to bridge UART (UART1) */
                 ESP_LOG_BUFFER_HEXDUMP(TAG, msg.buf, msg.buf_len, ESP_LOG_INFO);
                 ESP_LOGI(TAG, "USB -> UART (ASCII): %.*s", msg.buf_len, (char*)msg.buf);
 
