@@ -73,14 +73,6 @@ void app_send_to_usb(const uint8_t *data, size_t len)
     xQueueSend(usb_tx_queue, &msg, 0);
 }
 
-/**
- * @brief CDC device RX callback
- *
- * CDC device signals, that new data were received
- *
- * @param[in] itf   CDC device index
- * @param[in] event CDC event type
- */
 // Vendor class control transfer callback
 static uint8_t set_line_buf[7];
 static uint8_t line_control = 0;
