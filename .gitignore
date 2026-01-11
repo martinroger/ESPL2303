@@ -80,3 +80,5 @@ Desktop.ini
 # Additional ignores
 .vscode/*
 .devcontainer/*
+dependencies.lock
+

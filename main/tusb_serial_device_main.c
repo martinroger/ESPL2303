@@ -118,7 +118,7 @@ void app_main(void)
                         CDC_EVENT_LINE_STATE_CHANGED,
                         &tinyusb_cdc_line_state_changed_callback));
 #endif
-
+    
     ESP_LOGI(TAG, "USB initialization DONE");
     while (1) {
         if (xQueueReceive(app_queue, &msg, portMAX_DELAY)) {
