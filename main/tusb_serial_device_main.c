@@ -24,6 +24,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "tinyusb.h"
+#include <stdlib.h>
 #include "sdkconfig.h"
 #include "driver/uart.h"
 
@@ -283,16 +284,104 @@ void app_main(void)
      * sent over the vendor bulk IN endpoint so the host still receives the data without requiring
      * changes to TinyUSB's managed components.
      */
+    /* Create a modified configuration descriptor by copying the managed default
+     * configuration descriptor at runtime and appending a small Interrupt-IN
+     * endpoint (7 bytes) that PL2303 expects. This avoids referencing symbols
+     * like ITF_NUM_TOTAL (which are defined in the managed component's
+     * usb_descriptors.c) and keeps changes minimal.
+     */
+
+    extern const uint8_t descriptor_fs_cfg_default[]; /* provided by managed component */
+#if (TUD_OPT_HIGH_SPEED)
+    extern const uint8_t descriptor_hs_cfg_default[]; /* provided by managed component */
+#endif
+
+    /* Helper to extend a descriptor by appending an endpoint descriptor */
+    uint8_t *pl2303_fs_configuration = NULL;
+#if (TUD_OPT_HIGH_SPEED)
+    uint8_t *pl2303_hs_configuration = NULL;
+#endif
+
+    do {
+        const uint8_t *base = descriptor_fs_cfg_default;
+        uint16_t base_len = (uint16_t)base[2] | ((uint16_t)base[3] << 8);
+        const uint8_t irq_ep[] = { 0x07, /* bLength */ 0x05 /* TUSB_DESC_ENDPOINT */ , (0x80 | 0x03), /* EP3 IN */ 0x03 /* Interrupt */ , 0x08, 0x00, /* wMaxPacketSize */ 10 /* bInterval */ };
+        const size_t extra = sizeof(irq_ep);
+        size_t new_len = base_len + extra;
+
+        pl2303_fs_configuration = malloc(new_len);
+        if (!pl2303_fs_configuration) {
+            ESP_LOGE(TAG, "Failed to allocate FS descriptor buffer");
+            abort();
+        }
+        memcpy(pl2303_fs_configuration, base, base_len);
+
+        /* Find the vendor interface descriptor (bDescriptorType==INTERFACE && bInterfaceClass==0xFF)
+         * and increment its bNumEndpoints (at offset +4) so it matches the appended endpoint.
+         */
+        for (uint16_t i = 9; i + 2 < base_len; ) {
+            uint8_t bLength = pl2303_fs_configuration[i];
+            uint8_t bDescriptorType = pl2303_fs_configuration[i + 1];
+            if (bLength < 2) break;
+            if (bDescriptorType == 0x04 /* TUSB_DESC_INTERFACE */) {
+                uint8_t bInterfaceClass = pl2303_fs_configuration[i + 5];
+                if (bInterfaceClass == 0xFF) {
+                    /* increment bNumEndpoints */
+                    pl2303_fs_configuration[i + 4] = (uint8_t)(pl2303_fs_configuration[i + 4] + 1);
+                    ESP_LOGI(TAG, "Updated vendor interface bNumEndpoints to %d", pl2303_fs_configuration[i + 4]);
+                    break;
+                }
+            }
+            i += bLength;
+        }
+
+        memcpy(pl2303_fs_configuration + base_len, irq_ep, extra);
+        pl2303_fs_configuration[2] = (uint8_t)(new_len & 0xff);
+        pl2303_fs_configuration[3] = (uint8_t)((new_len >> 8) & 0xff);
+
+    #if (TUD_OPT_HIGH_SPEED)
+        const uint8_t *base_hs = descriptor_hs_cfg_default;
+        uint16_t base_hs_len = (uint16_t)base_hs[2] | ((uint16_t)base_hs[3] << 8);
+        size_t new_hs_len = base_hs_len + extra;
+        pl2303_hs_configuration = malloc(new_hs_len);
+        if (!pl2303_hs_configuration) {
+            ESP_LOGE(TAG, "Failed to allocate HS descriptor buffer");
+            abort();
+        }
+        memcpy(pl2303_hs_configuration, base_hs, base_hs_len);
+
+        for (uint16_t i = 9; i + 2 < base_hs_len; ) {
+            uint8_t bLength = pl2303_hs_configuration[i];
+            uint8_t bDescriptorType = pl2303_hs_configuration[i + 1];
+            if (bLength < 2) break;
+            if (bDescriptorType == 0x04 /* TUSB_DESC_INTERFACE */) {
+                uint8_t bInterfaceClass = pl2303_hs_configuration[i + 5];
+                if (bInterfaceClass == 0xFF) {
+                    pl2303_hs_configuration[i + 4] = (uint8_t)(pl2303_hs_configuration[i + 4] + 1);
+                    ESP_LOGI(TAG, "Updated HS vendor interface bNumEndpoints to %d", pl2303_hs_configuration[i + 4]);
+                    break;
+                }
+            }
+            i += bLength;
+        }
+
+        memcpy(pl2303_hs_configuration + base_hs_len, irq_ep, extra);
+        pl2303_hs_configuration[2] = (uint8_t)(new_hs_len & 0xff);
+        pl2303_hs_configuration[3] = (uint8_t)((new_hs_len >> 8) & 0xff);
+    #endif
+
+    } while (0);
+
     const tinyusb_config_t tusb_cfg = {
         .device_descriptor = NULL,
         .string_descriptor = NULL,
         .external_phy = false,
 #if (TUD_OPT_HIGH_SPEED)
-        .fs_configuration_descriptor = NULL,
-        .hs_configuration_descriptor = NULL,
+        .fs_configuration_descriptor = pl2303_fs_configuration,
+        .hs_configuration_descriptor = pl2303_hs_configuration,
         .qualifier_descriptor = NULL,
 #else
-        .configuration_descriptor = NULL,
+        .configuration_descriptor = pl2303_fs_configuration,
 #endif // TUD_OPT_HIGH_SPEED
     };
 
@@ -308,7 +397,7 @@ void app_main(void)
     };
 
     ESP_ERROR_CHECK(uart_param_config(BRIDGE_UART_NUM, &uart_cfg));
-    ESP_ERROR_CHECK(uart_driver_install(BRIDGE_UART_NUM, 512, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_driver_install(BRIDGE_UART_NUM, 512, 512, 0, NULL, 0));
 
     /* start UART rx task */
     xTaskCreate(uart_task, "uart_task", 2048, NULL, 10, NULL);
