@@ -71,14 +71,14 @@ esp_err_t app_send_to_usb(const uint8_t *data, size_t len)
         }
         else
         {
-            memcpy(msg.buf, data +len - remaining,remaining);
+            memcpy(msg.buf, data + len - remaining, remaining);
             msg.len = remaining;
             msg.source = 0;
         }
         remaining -= msg.len;
-        if (xQueueSend(usb_tx_queue, &msg,pdMS_TO_TICKS(0)) != pdTRUE)
+        if (xQueueSend(usb_tx_queue, &msg, pdMS_TO_TICKS(0)) != pdTRUE)
         {
-            ESP_LOGE(__func__,"USB TX queue full");
+            ESP_LOGE(__func__, "USB TX queue full");
             return ESP_ERR_NO_MEM;
         }
     }
@@ -149,72 +149,68 @@ bool pl2303_get_carrier(void)
 
 bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const *request)
 {
+    // IMPORTANT: If it's NOT a Vendor or Class request, return false.
+    // This allows TinyUSB to handle SET_ADDRESS, GET_DESCRIPTOR, etc.
+    if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_STANDARD)
+    {
+        return false;
+    }
+
     ESP_LOGI(__func__, "Vendor CTRL (stage %d): bm=0x%02x bReq=0x%02x wVal=0x%04x wIdx=0x%04x wLen=%d",
              stage, request->bmRequestType, request->bRequest, request->wValue, request->wIndex, request->wLength);
 
     if (stage == CONTROL_STAGE_SETUP)
     {
-        // Handle vendor read/write request (bRequest == 0x01)
+        // --- 1. PL2303 Vendor Read Requests ---
         if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_VENDOR && request->bRequest == 0x01)
         {
-            // IN vendor read (device->host)
-            if ((request->bmRequestType & TUSB_DIR_IN) && request->wValue == 0x8484)
+            if (request->bmRequestType & TUSB_DIR_IN)
             {
-                uint8_t resp = 0x02; // value observed in PCAP
-                return tud_control_xfer(rhport, request, &resp, sizeof(resp));
-            }
-            else if ((request->bmRequestType & TUSB_DIR_IN) && request->wValue == 0x8383)
-            {
-                uint8_t resp = 0xEF; // value observed in PCAP
-                return tud_control_xfer(rhport, request, &resp, sizeof(resp));
-            }
+                static uint8_t resp; // Static to ensure memory persists during xfer
+                if (request->wValue == 0x8484)
+                    resp = 0x02;
+                else if (request->wValue == 0x8383)
+                    resp = 0xEF;
+                else
+                    resp = 0x00;
 
-            // OUT vendor write (host->device) - acknowledge
-            if (!(request->bmRequestType & TUSB_DIR_IN))
+                return tud_control_xfer(rhport, request, &resp, sizeof(resp));
+            }
+            else
             {
+                // Vendor Write: Just ACK it
                 return tud_control_status(rhport, request);
             }
-
-            return false;
         }
 
-        // Handle GET_LINE class request (some hosts may fall back to class requests)
-        if ((request->bmRequestType == (TUSB_DIR_IN | TUSB_REQ_TYPE_CLASS | TUSB_REQ_RCPT_INTERFACE)) && request->bRequest == 0x21)
+        // --- 2. Class Requests (CDC-like) ---
+        if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_CLASS)
         {
-            uint8_t linebuf[7] = {0};
-            linebuf[6] = 8; // 8 data bits
-            return tud_control_xfer(rhport, request, linebuf, sizeof(linebuf));
+            // GET_LINE_CODING
+            if (request->bRequest == 0x21) {
+                static uint8_t linebuf[7] = {0, 0, 0, 0, 0, 0, 8};
+                return tud_control_xfer(rhport, request, linebuf, sizeof(linebuf));
+            }
+            // SET_LINE_CODING
+            if (request->bRequest == 0x20) {
+                return tud_control_xfer(rhport, request, set_line_buf, sizeof(set_line_buf));
+            }
+            // SET_CONTROL_LINE_STATE
+            if (request->bRequest == 0x22) {
+                line_control = request->wValue & 0xff;
+                return tud_control_status(rhport, request);
+            }
         }
-
-        // CDC_SET_LINE_CODING (host -> device) - request payload of 7 bytes
-        if ((request->bmRequestType == (TUSB_DIR_OUT | TUSB_REQ_TYPE_CLASS | TUSB_REQ_RCPT_INTERFACE)) && request->bRequest == 0x20)
-        {
-            // schedule buffer to receive 7 bytes from host
-            return tud_control_xfer(rhport, request, set_line_buf, sizeof(set_line_buf));
-        }
-
-        // CDC_SET_CONTROL_LINE_STATE (host -> device) - used for DTR/RTS
-        if ((request->bmRequestType == (TUSB_DIR_OUT | TUSB_REQ_TYPE_CLASS | TUSB_REQ_RCPT_INTERFACE)) && request->bRequest == 0x22)
-        {
-            // record line control immediately and ack
-            line_control = request->wValue & 0xff;
-            ESP_LOGI(TAG, "Set control lines: DTR=%d RTS=%d", (bool)(line_control & 0x01), (bool)(line_control & 0x02));
-            tud_control_status(rhport, request);
-
-            /* Send a PL2303-like status packet (9 bytes). Use the helper so that
-             * status is consistent with any carrier overrides set by the application.
-             */
-            pl2303_send_status();
-            return true;
-        }
-
-        // Unknown request - stall
-        return false;
     }
 
     // DATA / ACK stages
     if (stage == CONTROL_STAGE_ACK)
     {
+        if (request->bRequest == 0x22) {
+            // Handshake is done, NOW send the status packet
+            pl2303_send_status();
+        }
+        
         // If this was a SET_LINE (0x20) request, apply the new UART settings
         if (request->bRequest == 0x20)
         {
@@ -394,7 +390,6 @@ void app_main(void)
      */
 
     extern const uint8_t descriptor_fs_cfg_default[]; /* provided by managed component */
-
 
     /* Helper to extend a descriptor by appending an endpoint descriptor */
     uint8_t *pl2303_fs_configuration = NULL;
