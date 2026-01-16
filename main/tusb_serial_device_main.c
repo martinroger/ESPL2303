@@ -54,8 +54,7 @@ uint8_t const desc_configuration[] = {
     7, TUSB_DESC_ENDPOINT, EPNUM_VENDOR_OUT, TUSB_XFER_BULK, U16_TO_U8S_LE(64), 0,
 
     // Endpoint In (Bulk)
-    7, TUSB_DESC_ENDPOINT, EPNUM_VENDOR_IN, TUSB_XFER_BULK, U16_TO_U8S_LE(64), 0
-};
+    7, TUSB_DESC_ENDPOINT, EPNUM_VENDOR_IN, TUSB_XFER_BULK, U16_TO_U8S_LE(64), 0};
 
 /**
  * String Descriptors
@@ -106,26 +105,57 @@ static void pl2303_send_status(void)
 
 bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const *request)
 {
+    static uint8_t req_0404_wIndex = 0x00;
     // Allow TinyUSB Core to handle Standard Requests (Address/Enumeration)
     if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_STANDARD)
         return false;
+
+    if (stage != CONTROL_STAGE_SETUP)
+    {
+        if (stage == CONTROL_STAGE_ACK)
+        {
+            ESP_LOGI(__func__, "ACK");
+            if (request->bRequest == 0x22)
+                pl2303_send_status();
+            if (request->bRequest == 0x20)
+            {
+                uint32_t baud = (uint32_t)set_line_buf[0] | (set_line_buf[1] << 8) | (set_line_buf[2] << 16) | (set_line_buf[3] << 24);
+                ESP_LOGI(TAG, "Baud set to: %lu", baud);
+                if (baud > 0)
+                    uart_set_baudrate(BRIDGE_UART_NUM, baud);
+            }
+        }
+        else
+            ESP_LOGW(__func__,"NOT SETUP");
+        return true;
+    }
 
     if (stage == CONTROL_STAGE_SETUP)
     {
         // Vendor Reads (0x01)
         if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_VENDOR && request->bRequest == 0x01)
         {
-            if (request->bmRequestType & TUSB_DIR_IN)
+            ESP_LOGI(__func__,"VENDOR CONTROL");
+            if (request->bmRequestType_bit.direction & TUSB_DIR_IN)
             {
-                ESP_LOGI(__func__, "Vendor: %04X", request->wValue);
                 static uint8_t resp;
                 // Response to 0x8383 seems to vary to 0xFF after a (0x40 01) 0x0404 0x0100 0x00
-                resp = (request->wValue == 0x8484) ? 0x02 : (request->wValue == 0x8383 ? 0xEF : 0x00);
+                resp = (request->wValue == 0x8484) ? 0x02 : (request->wValue == 0x8383 ? (0xEF+req_0404_wIndex) : 0x00);
                 return tud_control_xfer(rhport, request, &resp, 1);
             }
-            else if ((request->bmRequestType & TUSB_DIR_OUT) && (request->wValue == 0x0404))
+            else if ((request->bmRequestType_bit.direction == TUSB_DIR_OUT))
             {
-                ESP_LOGI(__func__, "Vendor: %04X", request->wValue);
+                if(request->wValue == 0x0404)
+                {
+                    if (request->wIndex == 0x0001)
+                        req_0404_wIndex = 0x10;
+                    else
+                        req_0404_wIndex = 0x00;
+                    ESP_LOGI(__func__, "0404: %02X",req_0404_wIndex);
+                }
+                else
+                    ESP_LOGW(__func__,"Implement %04X",request->wValue);
+                
             }
             return tud_control_status(rhport, request);
         }
@@ -133,9 +163,8 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
         // Class Requests (Line Coding / Control)
         if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_CLASS)
         {
-            ESP_LOGI(__func__, "Class: %04X", request->wValue);
             if (request->bRequest == 0x21)
-            { // GET_LINE
+            { // GET_LINE, stalled by PL2303 sometimes
                 static uint8_t linebuf[7] = {0, 0, 0, 0, 0, 0, 8};
                 return tud_control_xfer(rhport, request, linebuf, 7);
             }
@@ -149,22 +178,9 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
                 return tud_control_status(rhport, request);
             }
         }
-    }
 
-    if (stage == CONTROL_STAGE_ACK)
-    {
-        ESP_LOGI(__func__, "Control Stage");
-        if (request->bRequest == 0x22)
-            pl2303_send_status();
-        if (request->bRequest == 0x20)
-        {
-            uint32_t baud = (uint32_t)set_line_buf[0] | (set_line_buf[1] << 8) | (set_line_buf[2] << 16) | (set_line_buf[3] << 24);
-            ESP_LOGI(TAG, "Baud set to: %lu", baud);
-            if (baud > 0)
-                uart_set_baudrate(BRIDGE_UART_NUM, baud);
-        }
+        // Default : STALL
     }
-    return true;
 }
 
 // --- Tasks ---
