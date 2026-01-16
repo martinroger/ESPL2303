@@ -36,8 +36,8 @@ function pl2303_proto.dissector(buffer, pinfo, tree)
     elseif b_type == 0x21 then
         if b_req == 0x20 then 
             msg = "SET LINE Request" -- Somehow does not trigger
-            if buffer:len() >= 7 then
-                local baud = buffer(0,4):le_uint()
+            if buffer:len() >= 10 then
+                local baud = buffer(7,4):le_uint()
                 msg = msg .. string.format(" (%d baud)", baud)
             end
         elseif b_req == 0x22 then msg = "SET CONTROL Request"
