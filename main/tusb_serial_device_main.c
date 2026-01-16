@@ -126,7 +126,7 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
             }
         }
         else
-            ESP_LOGW(__func__,"NOT SETUP");
+            ESP_LOGW(__func__, "NOT SETUP");
         return true;
     }
 
@@ -135,27 +135,26 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
         // Vendor Reads (0x01)
         if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_VENDOR && request->bRequest == 0x01)
         {
-            ESP_LOGI(__func__,"VENDOR CONTROL");
+            ESP_LOGI(__func__, "VENDOR CONTROL");
             if (request->bmRequestType_bit.direction & TUSB_DIR_IN)
             {
                 static uint8_t resp;
                 // Response to 0x8383 seems to vary to 0xFF after a (0x40 01) 0x0404 0x0100 0x00
-                resp = (request->wValue == 0x8484) ? 0x02 : (request->wValue == 0x8383 ? (0xEF+req_0404_wIndex) : 0x00);
+                resp = (request->wValue == 0x8484) ? 0x02 : (request->wValue == 0x8383 ? (0xEF + req_0404_wIndex) : 0x00);
                 return tud_control_xfer(rhport, request, &resp, 1);
             }
             else if ((request->bmRequestType_bit.direction == TUSB_DIR_OUT))
             {
-                if(request->wValue == 0x0404)
+                if (request->wValue == 0x0404)
                 {
                     if (request->wIndex == 0x0001)
                         req_0404_wIndex = 0x10;
                     else
                         req_0404_wIndex = 0x00;
-                    ESP_LOGI(__func__, "0404: %02X",req_0404_wIndex);
+                    ESP_LOGI(__func__, "0404: %02X", req_0404_wIndex);
                 }
                 else
-                    ESP_LOGW(__func__,"Implement %04X",request->wValue);
-                
+                    ESP_LOGW(__func__, "Implement %04X", request->wValue);
             }
             return tud_control_status(rhport, request);
         }
@@ -181,6 +180,10 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
 
         // Default : STALL
     }
+
+    // Should not be reached
+    ESP_LOGE(__func__, "Default return");
+    return false;
 }
 
 // --- Tasks ---
