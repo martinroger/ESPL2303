@@ -96,9 +96,11 @@ static void pl2303_send_status(void)
 
     if (tud_vendor_mounted())
     {
+        // tud_vendor_n_write ?
         tud_vendor_write(status, sizeof(status));
         tud_vendor_write_flush();
     }
+    ESP_LOGI(__func__,"Sent status : %02X",status[8]);
 }
 
 // --- TinyUSB Callbacks ---
@@ -119,14 +121,14 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
                 pl2303_send_status();
             if (request->bRequest == 0x20)
             {
-                uint32_t baud = (uint32_t)set_line_buf[0] | (set_line_buf[1] << 8) | (set_line_buf[2] << 16) | (set_line_buf[3] << 24);
-                ESP_LOGI(TAG, "Baud set to: %lu", baud);
+                // uint32_t baud = (uint32_t)set_line_buf[0] | (set_line_buf[1] << 8) | (set_line_buf[2] << 16) | (set_line_buf[3] << 24);
+                // ESP_LOGI(__func__,"SET LINE NOT SETUP");
+                uint32_t baud = *(uint32_t *)(set_line_buf);
+                ESP_LOGI(__func__, "Baud set to: %lu", baud);
                 if (baud > 0)
                     uart_set_baudrate(BRIDGE_UART_NUM, baud);
             }
         }
-        else
-            ESP_LOGW(__func__, "NOT SETUP");
         return true;
     }
 
@@ -135,11 +137,12 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
         // Vendor Reads (0x01)
         if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_VENDOR && request->bRequest == 0x01)
         {
-            ESP_LOGI(__func__, "VENDOR CONTROL");
             if (request->bmRequestType_bit.direction & TUSB_DIR_IN)
             {
+                ESP_LOGW(__func__, "VENDOR READ %04X", request->wValue);
                 static uint8_t resp;
                 // Response to 0x8383 seems to vary to 0xFF after a (0x40 01) 0x0404 0x0100 0x00
+                // There are more cases to handle, like 0x0080
                 resp = (request->wValue == 0x8484) ? 0x02 : (request->wValue == 0x8383 ? (0xEF + req_0404_wIndex) : 0x00);
                 return tud_control_xfer(rhport, request, &resp, 1);
             }
@@ -151,10 +154,9 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
                         req_0404_wIndex = 0x10;
                     else
                         req_0404_wIndex = 0x00;
-                    ESP_LOGI(__func__, "0404: %02X", req_0404_wIndex);
                 }
                 else
-                    ESP_LOGW(__func__, "Implement %04X", request->wValue);
+                    ESP_LOGW(__func__, "VENDOR WRITE %04X", request->wValue);
             }
             return tud_control_status(rhport, request);
         }
@@ -164,16 +166,20 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
         {
             if (request->bRequest == 0x21)
             { // GET_LINE, stalled by PL2303 sometimes
+                ESP_LOGI(__func__,"GET_LINE");
                 static uint8_t linebuf[7] = {0, 0, 0, 0, 0, 0, 8};
+                *((uint32_t*)&linebuf[0]) = *((uint32_t*)&set_line_buf);
                 return tud_control_xfer(rhport, request, linebuf, 7);
             }
             if (request->bRequest == 0x20)
             { // SET_LINE
+                // ESP_LOGI(__func__, "SET LINE SETUP");
                 return tud_control_xfer(rhport, request, set_line_buf, 7);
             }
             if (request->bRequest == 0x22)
             { // SET_CONTROL_LINE
                 line_control = request->wValue & 0xff;
+                ESP_LOGI(__func__, "SET_CONTROL : DTR %d RTS %d", (line_control & 0x01) != 0, (line_control & 0x02) != 0);
                 return tud_control_status(rhport, request);
             }
         }
@@ -198,7 +204,7 @@ static void uart_task(void *arg)
             tud_vendor_write(rx_buf, len);
             tud_vendor_write_flush();
         }
-        vTaskDelay(pdMS_TO_TICKS(1));
+        vTaskDelay(pdMS_TO_TICKS(1)); // Really necessary ?
     }
 }
 
