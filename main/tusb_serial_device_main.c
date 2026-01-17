@@ -124,9 +124,14 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
                 // uint32_t baud = (uint32_t)set_line_buf[0] | (set_line_buf[1] << 8) | (set_line_buf[2] << 16) | (set_line_buf[3] << 24);
                 // ESP_LOGI(__func__,"SET LINE NOT SETUP");
                 uint32_t baud = *(uint32_t *)(set_line_buf);
-                ESP_LOGI(__func__, "Baud set to: %lu", baud);
+                // ESP_LOGI(__func__, "Baud set to: %lu", baud);
                 if (baud > 0)
-                    uart_set_baudrate(BRIDGE_UART_NUM, baud);
+                {
+                    esp_err_t uart_set_err = uart_set_baudrate(BRIDGE_UART_NUM, baud);
+                    if (uart_set_err != ESP_OK)
+                        ESP_LOGE(__func__,"Could not set baud to %lu",baud);
+                }
+                   
             }
         }
         return true;
