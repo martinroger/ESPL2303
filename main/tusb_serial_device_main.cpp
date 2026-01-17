@@ -133,6 +133,7 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
                     if (uart_set_err != ESP_OK)
                         ESP_LOGE(__func__, "Could not set baud to %lu", baud);
                 }
+                pl2303_send_status();
             }
         }
         return true;
@@ -248,6 +249,7 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
             case 0x20: // SET LINE
             {
                 ESP_LOGD(__func__, "SET_LINE SETUP");
+                // pl2303_send_status(); // Questionable
                 return tud_control_xfer(rhport, request, set_line_buf, 7);
                 break;
             }
