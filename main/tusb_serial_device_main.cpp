@@ -72,44 +72,49 @@ char const *string_desc_arr[] = {
 // --- Globals & Queues ---
 
 static uint8_t rx_buf[CFG_TUD_VENDOR_RX_BUFSIZE];
-static uint8_t set_line_buf[7];
 static uint8_t line_control = 0;
-static uint8_t status_override = 0;
 
-typedef struct
-{
-    uint8_t buf[CFG_TUD_VENDOR_RX_BUFSIZE];
-    size_t buf_len;
-} usb_rx_msg_t;
+// typedef struct
+// {
+//     uint8_t buf[CFG_TUD_VENDOR_RX_BUFSIZE];
+//     size_t buf_len;
+// } usb_rx_msg_t;
 
-static QueueHandle_t usb_rx_queue;
+// static QueueHandle_t usb_rx_queue;
 
 // --- PL2303 Logic ---
 
-static void pl2303_send_status(void)
+static void pl2303_send_status(bool DCD_state, bool CTS_state, bool DSR_state, bool RI_state)
 {
     uint8_t status[9] = {0};
-    uint8_t combined = line_control | status_override;
-    if (combined & 0x02)
-        status[8] |= 0x80; // CTS
-    if (combined & 0x01)
-        status[8] |= 0x01; // DCD
-
+    uint8_t final_status = 0;
+    final_status |= (DCD_state? 0x01 : 0x00);
+    final_status |= (DSR_state? 0x02 : 0x00);
+    final_status |= (RI_state? 0x08 : 0x00);
+    final_status |= (CTS_state? 0x80 : 0x00);
+    status[8] = final_status;
     if (tud_vendor_mounted())
     {
         // tud_vendor_n_write ?
         tud_vendor_write(status, sizeof(status));
         tud_vendor_write_flush();
     }
-    ESP_LOGI(__func__, "Sent status : %02X", status[8]);
+    ESP_LOGD(__func__, "Sent status : %02X", status[8]);
+}
+
+static void pl2303_send_status(void)
+{
+    pl2303_send_status(true,true,true,false);
 }
 
 // --- TinyUSB Callbacks ---
 
 bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const *request)
 {
-    static uint8_t req_0404_wIndex = 0x00;
-    // Allow TinyUSB Core to handle Standard Requests (Address/Enumeration)
+    static uint8_t req_0404_wIndex = 0x00; // Toggler for write and read requests around 0x0404 and 0x8383
+    static uint8_t resp_read_0000 = 0x01;
+    static uint8_t set_line_buf[7];        // Reception buffer for the set_line request
+    // Allow TinyUSB Core to handle stray standard Requests (Address/Enumeration)
     if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_STANDARD)
         return false;
 
@@ -117,15 +122,11 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
     {
         if (stage == CONTROL_STAGE_ACK)
         {
-            ESP_LOGI(__func__, "ACK");
-            if (request->bRequest == 0x22)
+            if (request->bRequest == 0x22) // SET CONTROL request ?
                 pl2303_send_status();
-            if (request->bRequest == 0x20)
+            if (request->bRequest == 0x20) // SET LINE request, only handling the baudrate
             {
-                // uint32_t baud = (uint32_t)set_line_buf[0] | (set_line_buf[1] << 8) | (set_line_buf[2] << 16) | (set_line_buf[3] << 24);
-                // ESP_LOGI(__func__,"SET LINE NOT SETUP");
                 uint32_t baud = *(uint32_t *)(set_line_buf);
-                // ESP_LOGI(__func__, "Baud set to: %lu", baud);
                 if (baud > 0)
                 {
                     esp_err_t uart_set_err = uart_set_baudrate(BRIDGE_UART_NUM, baud);
@@ -139,29 +140,54 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
 
     if (stage == CONTROL_STAGE_SETUP)
     {
-        // Vendor Reads (0x01)
-        if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_VENDOR && request->bRequest == 0x01)
+        if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_VENDOR && request->bRequest == 0x01) // Could be replaced by request->bmRequestType == 0x40 or 0xc0 (write and read respectively)
         {
-            if (request->bmRequestType_bit.direction & TUSB_DIR_IN)
+            if (request->bmRequestType_bit.direction & TUSB_DIR_IN) // Vendor Reads
             {
-                ESP_LOGW(__func__, "VENDOR READ %04X", request->wValue);
+
                 static uint8_t resp;
                 // Response to 0x8383 seems to vary to 0xFF after a (0x40 01) 0x0404 0x0100 0x00
                 // There are more cases to handle, like 0x0080
-                resp = (request->wValue == 0x8484) ? 0x02 : (request->wValue == 0x8383 ? (0xEF + req_0404_wIndex) : 0x00);
-                return tud_control_xfer(rhport, request, &resp, 1);
-            }
-            else if ((request->bmRequestType_bit.direction == TUSB_DIR_OUT))
-            {
-                if (request->wValue == 0x0404)
+                switch (request->wValue)
                 {
+                case 0x8484:
+                    resp = 0x02;
+                    break;
+                case 0x8383:
+                    resp = 0xEF + req_0404_wIndex;
+                    break;
+                case 0x8080: // Supports HX status
+                    resp = 0x01;
+                    break;
+                case 0x0080:
+                    resp = resp_read_0000;
+                    break;
+                default:
+                    resp = 0x00;
+                    ESP_LOGW(__func__, "VENDOR READ %04X len %04X", request->wValue, request->wLength);
+                    break;
+                }
+                return tud_control_xfer(rhport, request, &resp, request->wLength);
+            }
+            else if ((request->bmRequestType_bit.direction == TUSB_DIR_OUT)) // Vendor Writes
+            {
+                switch (request->wValue)
+                {
+                case 0x0404:
                     if (request->wIndex == 0x0001)
                         req_0404_wIndex = 0x10;
                     else
                         req_0404_wIndex = 0x00;
+                    break;
+                case 0x0000:
+                    resp_read_0000 = request->wIndex & 0xFF;
+                    break;
+                default:
+                ESP_LOGW(__func__, "VENDOR WRITE %04X len %04X", request->wValue, request->wLength);
+                    break;
                 }
-                else
-                    ESP_LOGW(__func__, "VENDOR WRITE %04X", request->wValue);
+
+                    
             }
             return tud_control_status(rhport, request);
         }
@@ -169,27 +195,79 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
         // Class Requests (Line Coding / Control)
         if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_CLASS)
         {
-            if (request->bRequest == 0x21)
-            { // GET_LINE, stalled by PL2303 sometimes
+            static uint8_t linebuf[7] = {0, 0, 0, 0, 0, 0, 8};
+            static uart_stop_bits_t U_stop_bits;
+            static uart_parity_t U_parity;
+            static uart_word_length_t U_data_bits;
+            static uint32_t U_baudrate;
+
+            switch (request->bRequest)
+            {
+            case 0x21: // GET LINE
+            {
                 ESP_LOGI(__func__, "GET_LINE");
-                static uint8_t linebuf[7] = {0, 0, 0, 0, 0, 0, 8};
-                *((uint32_t *)&linebuf[0]) = *((uint32_t *)&set_line_buf);
+                uart_get_baudrate(BRIDGE_UART_NUM, &U_baudrate);
+                uart_get_stop_bits(BRIDGE_UART_NUM, &U_stop_bits);
+                uart_get_parity(BRIDGE_UART_NUM, &U_parity);
+                uart_get_word_length(BRIDGE_UART_NUM, &U_data_bits);
+                linebuf[4] = U_stop_bits - 1;
+                switch (U_parity)
+                {
+                case UART_PARITY_ODD:
+                    linebuf[5] = 1;
+                    break;
+                case UART_PARITY_EVEN:
+                    linebuf[5] = 2;
+                    break;
+                default:
+                    linebuf[5] = 0;
+                    break;
+                }
+                switch (U_data_bits)
+                {
+                case UART_DATA_5_BITS:
+                    linebuf[6] = 5;
+                    break;
+                case UART_DATA_6_BITS:
+                    linebuf[6] = 6;
+                    break;
+                case UART_DATA_7_BITS:
+                    linebuf[6] = 7;
+                    break;
+                case UART_DATA_8_BITS:
+                    linebuf[6] = 8;
+                    break;
+                default:
+                    linebuf[6] = 8;
+                    break;
+                }
+                *((uint32_t *)&linebuf[0]) = U_baudrate;
                 return tud_control_xfer(rhport, request, linebuf, 7);
+                break;
             }
-            if (request->bRequest == 0x20)
-            { // SET_LINE
-                // ESP_LOGI(__func__, "SET LINE SETUP");
+            case 0x20: // SET LINE
+            {
+                ESP_LOGD(__func__, "SET_LINE SETUP");
                 return tud_control_xfer(rhport, request, set_line_buf, 7);
+                break;
             }
-            if (request->bRequest == 0x22)
-            { // SET_CONTROL_LINE
+            case 0x22: // SET CONTROL
+            {
                 line_control = request->wValue & 0xff;
-                ESP_LOGI(__func__, "SET_CONTROL : DTR %d RTS %d", (line_control & 0x01) != 0, (line_control & 0x02) != 0);
+                ESP_LOGD(__func__, "SET_CONTROL : DTR %d RTS %d", (line_control & 0x01) != 0, (line_control & 0x02) != 0);
                 return tud_control_status(rhport, request);
+                break;
+            }
+            case 0x23: // BREAK
+            {
+                ESP_LOGI(__func__, "BREAK : %s", request->wValue == 0XFFFF ? "ON" : "OFF");
+                return tud_control_status(rhport, request);
+                break;
+            }
+            default:
+                break;
             }
         }
-
-        // Default : STALL
     }
 
     // Should not be reached
@@ -199,6 +277,8 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
 
 // --- Tasks ---
 
+/// @brief Uart to USB transfer task. Checks for any data on the UART, and if so, goes to push them on the USB
+/// @param arg
 static void uart_task(void *arg)
 {
     while (1)
@@ -213,20 +293,20 @@ static void uart_task(void *arg)
                 usbd_edpt_xfer(0, 0x83, rx_buf, (uint16_t)len);
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(1)); // Really necessary ?
+        // vTaskDelay(pdMS_TO_TICKS(1)); // Really necessary ?
     }
 }
 
-void app_main(void)
+extern "C" void app_main(void)
 {
-    usb_rx_queue = xQueueCreate(10, sizeof(usb_rx_msg_t));
+    // usb_rx_queue = xQueueCreate(10, sizeof(usb_rx_msg_t));
 
     const tinyusb_config_t tusb_cfg = {
         .device_descriptor = &desc_device,
-        .configuration_descriptor = desc_configuration,
         .string_descriptor = string_desc_arr,
         .string_descriptor_count = 5,
         .external_phy = false,
+        .configuration_descriptor = desc_configuration,
     };
     ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
 
@@ -243,8 +323,7 @@ void app_main(void)
 
     while (1)
     {
-        // 1. Handle Outgoing Data (USB -> UART)
-        // Instead of a callback, we check if there is data available in the TinyUSB buffer
+        // This will need to move to a task
         if (tud_vendor_available())
         {
             uint32_t count = tud_vendor_read(rx_temp_buf, sizeof(rx_temp_buf));

@@ -26,9 +26,10 @@ function pl2303_proto.dissector(buffer, pinfo, tree)
         
         local dcd = ((status_byte & 0x01) ~= 0) and "DCD:1" or "DCD:0"
         local dsr = ((status_byte & 0x02) ~= 0) and "DSR:1" or "DSR:0"
+        local ri =  ((status_byte & 0x08) ~= 0) and "RI:1"  or "RI:0"
         local cts = ((status_byte & 0x80) ~= 0) and "CTS:1" or "CTS:0"
         
-        local msg = string.format("Status Update: %s, %s, %s", dcd, dsr, cts)
+        local msg = string.format("Status Update: %s, %s, %s, %s", dcd, dsr, cts, ri)
         pinfo.cols.info:set(msg)
         pinfo.cols.protocol = "PL2303"
         subtree:add(f_stat, buffer(8,1), msg)
