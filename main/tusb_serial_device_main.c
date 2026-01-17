@@ -6,6 +6,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "tinyusb.h"
+#include "device/usbd_pvt.h" // Required for low-level access
 #include "driver/uart.h"
 
 static const char *TAG = "PL2303_Bridge";
@@ -100,7 +101,7 @@ static void pl2303_send_status(void)
         tud_vendor_write(status, sizeof(status));
         tud_vendor_write_flush();
     }
-    ESP_LOGI(__func__,"Sent status : %02X",status[8]);
+    ESP_LOGI(__func__, "Sent status : %02X", status[8]);
 }
 
 // --- TinyUSB Callbacks ---
@@ -129,9 +130,8 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
                 {
                     esp_err_t uart_set_err = uart_set_baudrate(BRIDGE_UART_NUM, baud);
                     if (uart_set_err != ESP_OK)
-                        ESP_LOGE(__func__,"Could not set baud to %lu",baud);
+                        ESP_LOGE(__func__, "Could not set baud to %lu", baud);
                 }
-                   
             }
         }
         return true;
@@ -171,9 +171,9 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
         {
             if (request->bRequest == 0x21)
             { // GET_LINE, stalled by PL2303 sometimes
-                ESP_LOGI(__func__,"GET_LINE");
+                ESP_LOGI(__func__, "GET_LINE");
                 static uint8_t linebuf[7] = {0, 0, 0, 0, 0, 0, 8};
-                *((uint32_t*)&linebuf[0]) = *((uint32_t*)&set_line_buf);
+                *((uint32_t *)&linebuf[0]) = *((uint32_t *)&set_line_buf);
                 return tud_control_xfer(rhport, request, linebuf, 7);
             }
             if (request->bRequest == 0x20)
@@ -206,8 +206,12 @@ static void uart_task(void *arg)
         int len = uart_read_bytes(BRIDGE_UART_NUM, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(10));
         if (len > 0 && tud_vendor_mounted())
         {
-            tud_vendor_write(rx_buf, len);
-            tud_vendor_write_flush();
+            // Check if Endpoint 0x83 (Bulk IN) is ready for a new transfer
+            if (!usbd_edpt_busy(0, EPNUM_VENDOR_IN))
+            {
+                // Manually push UART data to the Bulk IN pipe (0x83)
+                usbd_edpt_xfer(0, 0x83, rx_buf, (uint16_t)len);
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(1)); // Really necessary ?
     }
