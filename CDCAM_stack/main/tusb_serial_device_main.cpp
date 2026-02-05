@@ -13,6 +13,9 @@
 #include "tusb_cdc_acm.h"
 #include "sdkconfig.h"
 
+#include "driver/uart.h"
+
+
 static const char *TAG = "example";
 static uint8_t rx_buf[CONFIG_TINYUSB_CDC_RX_BUFSIZE + 1];
 
@@ -40,7 +43,7 @@ void tinyusb_cdc_rx_callback(int itf, cdcacm_event_t *event)
     size_t rx_size = 0;
 
     /* read */
-    esp_err_t ret = tinyusb_cdcacm_read(itf, rx_buf, CONFIG_TINYUSB_CDC_RX_BUFSIZE, &rx_size);
+    esp_err_t ret = tinyusb_cdcacm_read((tinyusb_cdcacm_itf_t)itf, rx_buf, CONFIG_TINYUSB_CDC_RX_BUFSIZE, &rx_size);
     if (ret == ESP_OK) {
 
         app_message_t tx_msg = {
@@ -70,7 +73,7 @@ void tinyusb_cdc_line_state_changed_callback(int itf, cdcacm_event_t *event)
     ESP_LOGI(TAG, "Line state changed on channel %d: DTR:%d, RTS:%d", itf, dtr, rts);
 }
 
-void app_main(void)
+extern "C" void app_main(void)
 {
     // Create FreeRTOS primitives
     app_queue = xQueueCreate(5, sizeof(app_message_t));
@@ -129,8 +132,8 @@ void app_main(void)
                 ESP_LOG_BUFFER_HEXDUMP(TAG, msg.buf, msg.buf_len, ESP_LOG_INFO);
 
                 /* write back */
-                tinyusb_cdcacm_write_queue(msg.itf, msg.buf, msg.buf_len);
-                esp_err_t err = tinyusb_cdcacm_write_flush(msg.itf, 0);
+                tinyusb_cdcacm_write_queue((tinyusb_cdcacm_itf_t)msg.itf, msg.buf, msg.buf_len);
+                esp_err_t err = tinyusb_cdcacm_write_flush((tinyusb_cdcacm_itf_t)msg.itf, 0);
                 if (err != ESP_OK) {
                     ESP_LOGE(TAG, "CDC ACM write flush error: %s", esp_err_to_name(err));
                 }
