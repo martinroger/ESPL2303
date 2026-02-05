@@ -29,6 +29,8 @@ typedef struct {
     uint8_t itf;                                        // Index of CDC device interface
 } app_message_t;
 
+QueueHandle_t uart_queue;
+
 /**
  * @brief CDC device RX callback
  *
@@ -79,6 +81,18 @@ extern "C" void app_main(void)
     app_queue = xQueueCreate(5, sizeof(app_message_t));
     assert(app_queue);
     app_message_t msg;
+
+    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1,2048,2048,10,&uart_queue,0));
+    uart_config_t uart_config = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
+    };
+    ESP_ERROR_CHECK(uart_param_config(UART_NUM_1, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1,5,6,7,8));
+
 
     ESP_LOGI(TAG, "USB initialization");
     const tinyusb_config_t tusb_cfg = {
