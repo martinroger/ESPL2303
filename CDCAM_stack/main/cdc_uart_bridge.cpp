@@ -57,8 +57,8 @@ void tinyusb_cdc_rx_callback(int itf, cdcacm_event_t *event)
 
         // memcpy(tx_msg.buf, rx_buf, rx_size);
         // xQueueSend(app_queue, &tx_msg, 0);
-        //Write to UART
-        uart_write_bytes(UART_NUM_1,(const char*)rx_buf,rx_size);
+        // Write to UART
+        uart_write_bytes(UART_NUM_1, (const char *)rx_buf, rx_size);
     }
     else
     {
@@ -79,8 +79,8 @@ void tinyusb_cdc_line_state_changed_callback(int itf, cdcacm_event_t *event)
     int dtr = event->line_state_changed_data.dtr;
     int rts = event->line_state_changed_data.rts;
     ESP_LOGI(TAG, "Line state changed on channel %d: DTR:%d, RTS:%d", itf, dtr, rts);
-    uart_set_rts(UART_NUM_1,rts);
-    uart_set_dtr(UART_NUM_1,dtr);
+    uart_set_rts(UART_NUM_1, rts);
+    uart_set_dtr(UART_NUM_1, dtr);
 }
 
 void tinyusb_cdc_line_coding_changed_callback(int itf, cdcacm_event_t *event)
@@ -91,29 +91,26 @@ void tinyusb_cdc_line_coding_changed_callback(int itf, cdcacm_event_t *event)
     uint8_t parity = event->line_coding_changed_data.p_line_coding->parity;
     if (uart_is_driver_installed(UART_NUM_1))
     {
-        
-        
-        uart_set_baudrate(UART_NUM_1,baudrate); // Should boundary check it
-        uart_set_word_length(UART_NUM_1,(uart_word_length_t)(data_bits-5));
-        uart_set_stop_bits(UART_NUM_1,(uart_stop_bits_t)(stop_bits+1)); // Should do switch-cases instead.
+
+        uart_set_baudrate(UART_NUM_1, baudrate); // Should boundary check it
+        uart_set_word_length(UART_NUM_1, (uart_word_length_t)(data_bits - 5));
+        uart_set_stop_bits(UART_NUM_1, (uart_stop_bits_t)(stop_bits + 1)); // Should do switch-cases instead.
         switch (parity)
         {
         case 0:
-            uart_set_parity(UART_NUM_1,UART_PARITY_DISABLE);
+            uart_set_parity(UART_NUM_1, UART_PARITY_DISABLE);
             break;
-        case 1 :
-            uart_set_parity(UART_NUM_1,UART_PARITY_ODD);
+        case 1:
+            uart_set_parity(UART_NUM_1, UART_PARITY_ODD);
             break;
         case 2:
-            uart_set_parity(UART_NUM_1,UART_PARITY_ODD);
+            uart_set_parity(UART_NUM_1, UART_PARITY_ODD);
             break;
         default:
-            ESP_LOGE(__func__,"Unknown parity");
+            ESP_LOGE(__func__, "Unknown parity");
             break;
         }
-
     }
-    
 }
 
 extern "C" void app_main(void)
@@ -132,7 +129,6 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(uart_param_config(UART_NUM_1, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, 5, 6, 7, 8));
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, 2048, 2048, 10, &uart_queue, 0));
-
 
     ESP_LOGI(TAG, "USB initialization");
     const tinyusb_config_t tusb_cfg = {
@@ -156,38 +152,26 @@ extern "C" void app_main(void)
         .rx_unread_buf_sz = 64,
         .callback_rx = &tinyusb_cdc_rx_callback, // the first way to register a callback
         .callback_rx_wanted_char = NULL,
-        .callback_line_state_changed = NULL,
+        .callback_line_state_changed = &tinyusb_cdc_line_state_changed_callback,
         .callback_line_coding_changed = &tinyusb_cdc_line_coding_changed_callback};
 
     ESP_ERROR_CHECK(tusb_cdc_acm_init(&acm_cfg));
-    /* the second way to register a callback */
-    ESP_ERROR_CHECK(tinyusb_cdcacm_register_callback(
-        TINYUSB_CDC_ACM_0,
-        CDC_EVENT_LINE_STATE_CHANGED,
-        &tinyusb_cdc_line_state_changed_callback));
 
-#if (CONFIG_TINYUSB_CDC_COUNT > 1)
-    acm_cfg.cdc_port = TINYUSB_CDC_ACM_1;
-    ESP_ERROR_CHECK(tusb_cdc_acm_init(&acm_cfg));
-    ESP_ERROR_CHECK(tinyusb_cdcacm_register_callback(
-        TINYUSB_CDC_ACM_1,
-        CDC_EVENT_LINE_STATE_CHANGED,
-        &tinyusb_cdc_line_state_changed_callback));
-#endif
+
 
     ESP_LOGI(TAG, "USB initialization DONE");
     while (1)
     {
         // Loop checking if there is anything coming from uart and write-flush it to the CDC
-        
-        size_t tx_len;
-        if(uart_read_bytes(UART_NUM_1,&tx_buf,tx_len,pdMS_TO_TICKS(5))>0)
+
+        size_t tx_len = uart_read_bytes(UART_NUM_1, &tx_buf, sizeof(tx_buf), pdMS_TO_TICKS(10));
+        if (tx_len > 0)
         {
-            tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0,(const uint8_t*)&tx_buf,tx_len);
-            esp_err_t err = tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0,pdMS_TO_TICKS(1));
+            tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (const uint8_t *)&tx_buf, tx_len);
+            esp_err_t err = tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, pdMS_TO_TICKS(1));
             if (err != ESP_OK)
             {
-                ESP_LOGW(__func__,"CDC ACM write flush error: %s", esp_err_to_name(err));
+                ESP_LOGW(__func__, "CDC ACM write flush error: %s", esp_err_to_name(err));
             }
         }
         else
