@@ -1,2 +1,2 @@
-idf_component_register(SRCS "tusb_serial_device_main.cpp"
+idf_component_register(SRCS "espl2303.cpp"
                        INCLUDE_DIRS .)

@@ -1,0 +1,39 @@
+menu "ESPL2303 Bridge"
+
+    config EP_VENDOR_BULK_OUT
+        hex "Bulk OUT vendor endpoint address"
+        default 0x02
+
+    config EP_VENDOR_BULK_IN
+        hex "Bulk IN vendor endpoint address"
+        default 0x83
+
+    config EP_VENDOR_IRQ
+        hex "Interrupt vendor endpoint address"
+        default 0x81
+        
+    config BRIDGE_UART_RX_BUFFER_SIZE
+        int "Buffer size for UART RX on Bridge"
+        default 2048
+
+    config BRIDGE_UART_TX_BUFFER_SIZE
+        int "Buffer size for UART TX on Bridge"
+        default 2048 
+    
+    config BRIDGE_RX_PIN
+        int "RX IO for the UART bridge"
+        default 17
+
+    config BRIDGE_TX_PIN
+        int "TX IO for the UART bridge"
+        default 18 
+
+    config BRIDGE_CTS_PIN
+        int "CTS IO for the UART bridge"
+        default -1
+
+    config BRIDGE_RTS_PIN
+        int "RTS IO for the UART bridge"
+        default -1 
+    
+endmenu
