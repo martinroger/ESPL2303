@@ -1,0 +1,28 @@
+menu "CDC UART Bridge"
+
+    config UART_RX_PIN
+        int "RX Pin for bridge UART"
+        default 18
+
+    config UART_TX_PIN
+        int "TX Pin for bridge UART"
+        default 17
+
+    config UART_CTS_PIN
+        int "CTS Pin for bridge UART"
+        default -1
+
+    config UART_RTS_PIN
+        int "RTS Pin for bridge UART"
+        default -1
+
+    config UART_RX_BUFSIZE
+        int "UART bridge RX buffer size"
+        default 2048
+
+    config UART_TX_BUFSIZE
+        int "UART bridge TX buffer size"
+        default 2048
+
+    
+endmenu
