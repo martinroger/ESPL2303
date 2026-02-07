@@ -8,9 +8,39 @@
 #include "sdkconfig.h"
 
 #include "driver/uart.h"
+#include "driver/gpio.h"
+
+// To change later
+#define DTR_GPIO (gpio_num_t)15
+#define RTS_GPIO (gpio_num_t)16
 
 static uint8_t rx_buf[CONFIG_TINYUSB_CDC_RX_BUFSIZE + 1];
 static uint8_t tx_buf[CONFIG_TINYUSB_CDC_TX_BUFSIZE + 1];
+
+esp_err_t init_bridge_control_pins(void)
+{
+    esp_err_t ret;
+    gpio_config_t io_conf = {};
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pin_bit_mask = (1ULL << DTR_GPIO) | (1ULL << RTS_GPIO);
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    ret = gpio_config(&io_conf);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(__func__, "GPIO config failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ret = (gpio_set_level(DTR_GPIO, 1) | gpio_set_level(RTS_GPIO, 1));
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(__func__, "GPIO set level failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    return ESP_OK;
+}
 
 /// @brief USB-> UART callback
 /// @param itf Interface
@@ -37,8 +67,18 @@ void tinyusb_cdc_line_state_changed_callback(int itf, cdcacm_event_t *event)
     int dtr = event->line_state_changed_data.dtr;
     int rts = event->line_state_changed_data.rts;
     ESP_LOGD(__func__, "Line state changed on channel %d: DTR:%d, RTS:%d", itf, dtr, rts);
-    uart_set_rts(UART_NUM_1, rts);
-    uart_set_dtr(UART_NUM_1, dtr);
+    // uart_set_rts(UART_NUM_1, rts);
+    // uart_set_dtr(UART_NUM_1, dtr);
+    esp_err_t ret = gpio_set_level(DTR_GPIO, dtr);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(__func__, "GPIO set level failed: %s", esp_err_to_name(ret));
+    }
+    ret = gpio_set_level(RTS_GPIO, rts);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(__func__, "GPIO set level failed: %s", esp_err_to_name(ret));
+    }
 }
 
 /// @brief Line coding change callback, sets the baudrate, data bits, stop bits and parity on the UART side
@@ -65,7 +105,7 @@ void tinyusb_cdc_line_coding_changed_callback(int itf, cdcacm_event_t *event)
             uart_set_parity(UART_NUM_1, UART_PARITY_ODD);
             break;
         case 2:
-            uart_set_parity(UART_NUM_1, UART_PARITY_ODD);
+            uart_set_parity(UART_NUM_1, UART_PARITY_EVEN);
             break;
         default:
             ESP_LOGE(__func__, "Unknown parity");
@@ -76,6 +116,10 @@ void tinyusb_cdc_line_coding_changed_callback(int itf, cdcacm_event_t *event)
 
 extern "C" void app_main(void)
 {
+    // Set up control pins
+    ESP_LOGD(__func__, "Initializing control pins");
+    ESP_ERROR_CHECK(init_bridge_control_pins());
+
     // Set up the target UART
     ESP_LOGD(__func__, "UART initialization");
     uart_config_t uart_config = {
@@ -89,7 +133,7 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, CONFIG_UART_RX_BUFSIZE, CONFIG_UART_TX_BUFSIZE, 0, NULL, 0));
 
     ESP_LOGD(__func__, "USB initialization");
-    const tinyusb_config_t tusb_cfg = { 0 };
+    const tinyusb_config_t tusb_cfg = {0};
     // const tinyusb_config_t tusb_cfg = {
     //     .device_descriptor = NULL,
     //     .string_descriptor = NULL,
@@ -109,12 +153,11 @@ extern "C" void app_main(void)
         .callback_line_coding_changed = &tinyusb_cdc_line_coding_changed_callback};
 
     ESP_ERROR_CHECK(tusb_cdc_acm_init(&acm_cfg));
-
     ESP_LOGD(__func__, "USB initialization DONE");
     while (1)
     {
         // Loop checking if there is anything coming from uart and write-flush it to the CDC
-        size_t tx_len = uart_read_bytes(UART_NUM_1, &tx_buf, sizeof(tx_buf), pdMS_TO_TICKS(10));
+        size_t tx_len = uart_read_bytes(UART_NUM_1, &tx_buf, sizeof(tx_buf), pdMS_TO_TICKS(1));
         if (tx_len > 0) // Not sure what should be done if length is 0, for now it is ignored
         {
             tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (const uint8_t *)&tx_buf, tx_len);
