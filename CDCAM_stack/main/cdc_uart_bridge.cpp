@@ -11,8 +11,8 @@
 #include "driver/gpio.h"
 
 // Bitty banggity
-#define DTR_GPIO (gpio_num_t)CONFIG_DTR_PIN
-#define RTS_GPIO (gpio_num_t)CONFIG_RTS_PIN
+#define DTR_GPIO (gpio_num_t) CONFIG_DTR_PIN
+#define RTS_GPIO (gpio_num_t) CONFIG_RTS_PIN
 
 static uint8_t rx_buf[CONFIG_TINYUSB_CDC_RX_BUFSIZE + 1];
 static uint8_t tx_buf[CONFIG_TINYUSB_CDC_TX_BUFSIZE + 1];
@@ -64,12 +64,12 @@ void tinyusb_cdc_rx_callback(int itf, cdcacm_event_t *event)
 /// @param event Type of CDC event
 void tinyusb_cdc_line_state_changed_callback(int itf, cdcacm_event_t *event)
 {
-    int dtr = event->line_state_changed_data.dtr;
-    int rts = event->line_state_changed_data.rts;
+    int dtr = ((event->line_state_changed_data.dtr ) ? 0 : 1);
+    int rts = ((event->line_state_changed_data.rts ) ? 0 : 1);
     ESP_LOGD(__func__, "Line state changed on channel %d: DTR:%d, RTS:%d", itf, dtr, rts);
     // uart_set_rts(UART_NUM_1, rts);
     // uart_set_dtr(UART_NUM_1, dtr);
-    // Might need inversion 
+    // Is inverted !
     esp_err_t ret = gpio_set_level(DTR_GPIO, dtr);
     if (ret != ESP_OK)
     {
@@ -170,7 +170,7 @@ extern "C" void app_main(void)
         }
         else
         {
-            vTaskDelay(pdMS_TO_TICKS(1)); // Stability yield
+            vTaskDelay(pdMS_TO_TICKS(5)); // Stability yield
         }
     }
 }

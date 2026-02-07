@@ -152,15 +152,25 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
                 uart_stop_bits_t stop_bits = (uart_stop_bits_t)(set_line_buf[4] + 1);
                 uart_parity_t parity = (set_line_buf[5] == 1 ? UART_PARITY_ODD : (set_line_buf[5] == 2 ? UART_PARITY_EVEN : UART_PARITY_DISABLE));
                 uart_word_length_t data_bits = (uart_word_length_t)(set_line_buf[6] - 5);
-                if (baud > 0)
+                if (baud >= 300 && stop_bits >= UART_STOP_BITS_1 && stop_bits <= UART_STOP_BITS_2 && parity >= UART_PARITY_DISABLE && parity <= UART_PARITY_ODD && data_bits >= UART_DATA_5_BITS && data_bits <= UART_DATA_8_BITS)
                 {
                     esp_err_t uart_set_err = uart_set_baudrate(BRIDGE_UART_NUM, baud);
                     if (uart_set_err != ESP_OK)
                         ESP_LOGE(__func__, "Could not set baud to %lu", baud);
+                    uart_set_err = uart_set_stop_bits(BRIDGE_UART_NUM, stop_bits);
+                    if (uart_set_err != ESP_OK)
+                        ESP_LOGE(__func__, "Could not set stop bits to %d", stop_bits);
+                    uart_set_err = uart_set_parity(BRIDGE_UART_NUM, parity);
+                    if (uart_set_err != ESP_OK)
+                        ESP_LOGE(__func__, "Could not set parity to %d", parity);
+                    uart_set_err = uart_set_word_length(BRIDGE_UART_NUM, data_bits);
+                    if (uart_set_err != ESP_OK)
+                        ESP_LOGE(__func__, "Could not set data bits to %d", data_bits);
                 }
-                uart_set_stop_bits(BRIDGE_UART_NUM, stop_bits);
-                uart_set_parity(BRIDGE_UART_NUM, parity);
-                uart_set_word_length(BRIDGE_UART_NUM, data_bits);
+                else
+                // Somehow this still gets triggered on the first half of the SET_LINE request, something edits it and sends it in. 
+                // Probably would be best not to use Stage then bRequest type, but rather the entire request
+                    ESP_LOGD(__func__, "SET_LINE ACK: baud %lu stop_bits %d parity %d data_bits %d", baud, stop_bits, parity, data_bits);
                 pl2303_send_status(); // Just in case
             }
         }
@@ -211,7 +221,7 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
                     resp_read_0000 = request->wIndex & 0xFF;
                     break;
                 default:
-                    ESP_LOGW(__func__, "VENDOR WRITE %04X len %04X", request->wValue, request->wLength);
+                    ESP_LOGD(__func__, "VENDOR WRITE %04X len %04X", request->wValue, request->wLength);
                     break;
                 }
             }
@@ -340,6 +350,8 @@ static void UART2USB_task(void *arg)
 
 extern "C" void app_main(void)
 {
+    ESP_ERROR_CHECK(init_bridge_control_pins());
+
     // Tiny USB configuration
     const tinyusb_config_t tusb_cfg = {
         .device_descriptor = &desc_device,
@@ -383,6 +395,6 @@ extern "C" void app_main(void)
             }
         }
         // Precautionary yield, 10 ticks
-        vTaskDelay(pdMS_TO_TICKS(1));
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }

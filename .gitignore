@@ -82,5 +82,4 @@ Desktop.ini
 .vscode/*
 .devcontainer/*
 dependencies.lock
-/partition_table/*
 
