@@ -28,12 +28,12 @@ menu "ESPL2303 Bridge"
         int "TX IO for the UART bridge"
         default 18 
 
-    config BRIDGE_CTS_PIN
-        int "CTS IO for the UART bridge"
-        default -1
+    config DTR_PIN
+        int "DTR pin to control resets"
+        default 15
 
-    config BRIDGE_RTS_PIN
-        int "RTS IO for the UART bridge"
-        default -1 
+    config RTS_PIN
+        int "RTS pin to control resets"
+        default 16
     
 endmenu

@@ -9,6 +9,37 @@
 #include "device/usbd_pvt.h" // Required for low-level access
 #include "driver/uart.h"
 
+#include "driver/gpio.h"
+
+// Bitty banggity
+#define DTR_GPIO (gpio_num_t) CONFIG_DTR_PIN
+#define RTS_GPIO (gpio_num_t) CONFIG_RTS_PIN
+
+esp_err_t init_bridge_control_pins(void)
+{
+    esp_err_t ret;
+    gpio_config_t io_conf = {};
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pin_bit_mask = (1ULL << DTR_GPIO) | (1ULL << RTS_GPIO);
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    ret = gpio_config(&io_conf);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(__func__, "GPIO config failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ret = (gpio_set_level(DTR_GPIO, 1) | gpio_set_level(RTS_GPIO, 1));
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(__func__, "GPIO set level failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    return ESP_OK;
+}
+
 #define BRIDGE_UART_NUM UART_NUM_1
 
 #pragma region Descriptors
@@ -251,8 +282,22 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
             {
                 line_control = request->wValue & 0xff;
                 ESP_LOGD(__func__, "SET_CONTROL : DTR %d RTS %d", (line_control & 0x01) != 0, (line_control & 0x02) != 0);
-                uart_set_dtr(BRIDGE_UART_NUM, ((line_control & 0x01) != 0));
-                uart_set_rts(BRIDGE_UART_NUM, ((line_control & 0x02) != 0));
+                // Wrong method, should use GPIO bitbanging instead
+                // uart_set_dtr(BRIDGE_UART_NUM, ((line_control & 0x01) != 0));
+                // uart_set_rts(BRIDGE_UART_NUM, ((line_control & 0x02) != 0));
+                // Might require inversion
+                int dtr = ((line_control & 0x01) != 0) ? 0 : 1; // Invert DTR for active low
+                int rts = ((line_control & 0x02) != 0) ? 0 : 1; // Invert RTS for active low
+                esp_err_t ret = gpio_set_level(DTR_GPIO, dtr);
+                if (ret != ESP_OK)
+                {
+                    ESP_LOGE(__func__, "GPIO set level failed: %s", esp_err_to_name(ret));
+                }
+                ret = gpio_set_level(RTS_GPIO, rts);
+                if (ret != ESP_OK)
+                {
+                    ESP_LOGE(__func__, "GPIO set level failed: %s", esp_err_to_name(ret));
+                }
                 return tud_control_status(rhport, request);
                 break;
             }
@@ -280,7 +325,7 @@ static void UART2USB_task(void *arg)
 {
     while (1)
     {
-        int len = uart_read_bytes(BRIDGE_UART_NUM, tusb_rx_buf, sizeof(tusb_rx_buf), pdMS_TO_TICKS(10));
+        int len = uart_read_bytes(BRIDGE_UART_NUM, tusb_rx_buf, sizeof(tusb_rx_buf), pdMS_TO_TICKS(1));
         if (len > 0 && tud_vendor_mounted())
         {
             // Check if Endpoint 0x83 (Bulk IN) is ready for a new transfer (should never be not ready but you know)
@@ -313,7 +358,8 @@ extern "C" void app_main(void)
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
     uart_param_config(BRIDGE_UART_NUM, &uart_cfg);
-    uart_set_pin(BRIDGE_UART_NUM, CONFIG_BRIDGE_TX_PIN, CONFIG_BRIDGE_RX_PIN, CONFIG_BRIDGE_RTS_PIN, CONFIG_BRIDGE_CTS_PIN);
+    uart_set_pin(BRIDGE_UART_NUM, CONFIG_BRIDGE_TX_PIN, CONFIG_BRIDGE_RX_PIN, -1, -1);
+    // Should actually use event queue for RX_DATA in to trigger the UART->USB task
     ESP_ERROR_CHECK(uart_driver_install(BRIDGE_UART_NUM, CONFIG_BRIDGE_UART_RX_BUFFER_SIZE, CONFIG_BRIDGE_UART_TX_BUFFER_SIZE, 0, NULL, 0));
     // Callbacks are not available for the vendor class, so they are implemented manually above
 

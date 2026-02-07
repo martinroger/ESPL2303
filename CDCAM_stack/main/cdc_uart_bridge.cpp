@@ -10,9 +10,9 @@
 #include "driver/uart.h"
 #include "driver/gpio.h"
 
-// To change later
-#define DTR_GPIO (gpio_num_t)15
-#define RTS_GPIO (gpio_num_t)16
+// Bitty banggity
+#define DTR_GPIO (gpio_num_t)CONFIG_DTR_PIN
+#define RTS_GPIO (gpio_num_t)CONFIG_RTS_PIN
 
 static uint8_t rx_buf[CONFIG_TINYUSB_CDC_RX_BUFSIZE + 1];
 static uint8_t tx_buf[CONFIG_TINYUSB_CDC_TX_BUFSIZE + 1];
@@ -69,6 +69,7 @@ void tinyusb_cdc_line_state_changed_callback(int itf, cdcacm_event_t *event)
     ESP_LOGD(__func__, "Line state changed on channel %d: DTR:%d, RTS:%d", itf, dtr, rts);
     // uart_set_rts(UART_NUM_1, rts);
     // uart_set_dtr(UART_NUM_1, dtr);
+    // Might need inversion 
     esp_err_t ret = gpio_set_level(DTR_GPIO, dtr);
     if (ret != ESP_OK)
     {
@@ -129,7 +130,7 @@ extern "C" void app_main(void)
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
     ESP_ERROR_CHECK(uart_param_config(UART_NUM_1, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, CONFIG_UART_TX_PIN, CONFIG_UART_RX_PIN, CONFIG_UART_RTS_PIN, CONFIG_UART_CTS_PIN));
+    ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, CONFIG_UART_TX_PIN, CONFIG_UART_RX_PIN, -1, -1));
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, CONFIG_UART_RX_BUFSIZE, CONFIG_UART_TX_BUFSIZE, 0, NULL, 0));
 
     ESP_LOGD(__func__, "USB initialization");

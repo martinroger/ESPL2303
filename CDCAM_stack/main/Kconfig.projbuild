@@ -8,13 +8,13 @@ menu "CDC UART Bridge"
         int "TX Pin for bridge UART"
         default 17
 
-    config UART_CTS_PIN
-        int "CTS Pin for bridge UART"
-        default -1
+    config DTR_PIN
+        int "DTR pin to control resets"
+        default 15
 
-    config UART_RTS_PIN
-        int "RTS Pin for bridge UART"
-        default -1
+    config RTS_PIN
+        int "RTS pin to control resets"
+        default 16
 
     config UART_RX_BUFSIZE
         int "UART bridge RX buffer size"
