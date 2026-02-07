@@ -1,0 +1,4 @@
+# ESP-IDF Partition Table
+# Name, Type, SubType, Offset, Size, Flags
+pl2303,app,factory,,1M,
+cdcam,app,test,,1M,
