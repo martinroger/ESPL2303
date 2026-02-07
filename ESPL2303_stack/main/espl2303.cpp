@@ -395,6 +395,6 @@ extern "C" void app_main(void)
             }
         }
         // Precautionary yield, 10 ticks
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(5);
     }
 }

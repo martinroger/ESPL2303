@@ -166,6 +166,7 @@ extern "C" void app_main(void)
             if (err != ESP_OK)
             {
                 ESP_LOGW(__func__, "CDC ACM write flush error: %s", esp_err_to_name(err));
+                tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, pdMS_TO_TICKS(0));
             }
         }
         else
